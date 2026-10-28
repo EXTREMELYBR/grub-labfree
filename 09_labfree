@@ -1,0 +1,86 @@
+#! /bin/sh
+# GRUB LabFree — menu de boot com nomes claros (instalado por grub-labfree/instalar.sh; desfazer: sudo grub-labfree desfazer).
+#
+# O 10_linux e o 30_uefi-firmware do sistema ficam desligados (sem permissão de execução) e este arquivo os roda no
+# lugar deles: a primeira entrada do 10_linux (kernel mais novo) vira "Iniciar o <sistema>", e o resto dele (todos
+# os kernels e o modo de recuperação) vai para "Opções avançadas (para técnicos)". Assim um kernel novo continua
+# entrando sozinho no menu. Uma atualização do pacote grub-common pode religar aqueles dois arquivos: o gancho do
+# apt (grub-labfree conferir) os desliga de novo e refaz o menu.
+set -e
+. "$pkgdatadir/grub-mkconfig_lib"
+
+DIR=$(dirname "$0")
+
+# nome do sistema para as entradas: "Linux Mint", "Ubuntu", "Debian"...
+SISTEMA=$( (. /etc/os-release; echo "${NAME:-Linux}") 2>/dev/null | sed 's# GNU/Linux##' | tr -d "'\\\\" )
+[ -n "$SISTEMA" ] || SISTEMA=Linux
+
+# 1) Linux: código de apoio do 10_linux (funções e variáveis usadas pelas entradas) + a entrada principal
+linux=""
+if [ -f "$DIR/10_linux" ]; then
+    linux=$(sh "$DIR/10_linux") || linux=""
+fi
+printf '%s\n' "$linux" | awk '/^(menuentry|submenu) /{exit} {print}'
+principal=$(printf '%s\n' "$linux" | awk '
+    /^menuentry / && !feito { dentro = 1 }
+    dentro { print }
+    dentro && /^}/ { dentro = 0; feito = 1 }')
+# entrada($1 = título, $2 = classe, $3 = id, $4 = parâmetros a mais do kernel; com $4, sem tela de abertura)
+entrada() {
+    printf '%s\n' "$principal" | awk -v titulo="$1" -v classe="$2" -v id="$3" -v extra="$4" '
+        NR == 1 { sub(/^menuentry '\''[^'\'']*'\''/, "menuentry '\''" titulo "'\''")
+            gsub(/ --class [^ ]+/, "")
+            sub(/ \$menuentry_id_option '\''[^'\'']*'\''/, " --class " classe " $menuentry_id_option '\''" id "'\''") }
+        extra != "" && /^\tlinux\t/ { gsub(/ (splash|\$vt_handoff)/, ""); $0 = $0 " " extra }
+        { print }'
+}
+[ -n "$principal" ] && entrada "Iniciar o $SISTEMA" linux labfree-linux ""
+
+# 2) Windows, se houver (o carregador fica na partição EFI, montada em /boot/efi)
+for esp in /boot/efi /efi; do
+    if [ -f "$esp/EFI/Microsoft/Boot/bootmgfw.efi" ] && dispositivo=$(${grub_probe} --target=device "$esp" 2>/dev/null); then
+        echo "Adding boot menu entry for Windows (GRUB LabFree) ..." >&2
+        echo "menuentry 'Iniciar o Windows' --class windows \$menuentry_id_option 'labfree-windows' {"
+        prepare_grub_to_access_device "$dispositivo" | sed 's/^/\t/'
+        printf '\tchainloader /EFI/Microsoft/Boot/bootmgfw.efi\n}\n'
+        break
+    fi
+done
+
+# 3) reparo do disco: liga este Linux sem tela gráfica, com a correção do disco forçada (fsck), e o
+#    grub-labfree-reparo.target confere as partições do Windows e da EFI, mostra o resultado e reinicia
+if [ -n "$principal" ] && [ -f /etc/systemd/system/grub-labfree-reparo.target ]; then
+    entrada "Reparar o disco (Windows e Linux)" reparar labfree-reparar \
+        "fsck.mode=force fsck.repair=yes systemd.unit=grub-labfree-reparo.target labfree.reparo=1"
+fi
+
+# 4) configurações da placa-mãe (no lugar do 30_uefi-firmware), reiniciar, desligar
+cat << 'EOF'
+if [ "$grub_platform" = "efi" ]; then
+	fwsetup --is-supported
+	if [ "$?" = 0 ]; then
+		menuentry 'Configurações da placa-mãe (BIOS/UEFI)' --class configuracoes $menuentry_id_option 'labfree-bios' {
+			fwsetup
+		}
+	fi
+fi
+menuentry 'Reiniciar' --class reiniciar $menuentry_id_option 'labfree-reiniciar' {
+	reboot
+}
+menuentry 'Desligar' --class desligar $menuentry_id_option 'labfree-desligar' {
+	halt
+}
+EOF
+
+# 5) opções avançadas: o resto do 10_linux (o submenu dele, com todos os kernels e o modo de recuperação)
+printf '%s\n' "$linux" | awk -v sistema="$SISTEMA" '
+    /^menuentry / && !passou { pulando = 1 }
+    pulando { if (/^}/) { pulando = 0; passou = 1 } ; next }
+    passou && /^submenu / && !renomeado { renomeado = 1
+        sub(/^submenu '\''[^'\'']*'\''/, "submenu '\''Opções avançadas (para técnicos)'\'' --class avancado") }
+    passou && /^\tmenuentry / {
+        sub(/'\''[^'\'']*, with Linux /, "'\''" sistema " (kernel ")
+        sub(/-generic/, "")
+        if (sub(/ \(recovery mode\)'\''/, ") - recuperação'\''")) {} else sub(/'\'' --class/, ")'\'' --class")
+        gsub(/ --class [^ ]+/, ""); sub(/ \$menuentry_id_option/, " --class linux $menuentry_id_option") }
+    passou { print }'

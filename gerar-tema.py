@@ -23,6 +23,19 @@ LOGO = FONTE / 'labfree-logo.png'
 ICONES = ['linux', 'windows', 'configuracoes', 'reiniciar', 'desligar', 'avancado', 'reparar']  # mesma ordem do icones.html
 AA = 4  # superamostragem para bordas arredondadas lisas
 
+# Textos fixos da tela. O GRUB só desenha fonte de 1 bit (letra serrilhada); por isso estes viram imagens suavizadas
+# (PNG com transparência). Só os itens do menu e o contador ficam em fonte do GRUB, porque mudam a cada máquina.
+# Trocou um texto? Rode este script e copie para o theme.txt a largura e o "left" que ele imprime.
+SELO = 'Infraestrutura de TI para empresas da Grande BH'
+TEXTOS = [  # nome do arquivo, texto, peso da Jost, tamanho, cor
+    ('texto_marca', 'SUPORTE E PROJETOS DE TI', 500, 16, (143, 184, 255)),
+    ('texto_slogan', 'Rede que aguenta a sua operação, e gente que atende.', 600, 32, (255, 255, 255)),
+    ('texto_contato', 'WhatsApp (31) 9 7526-0001     ·     contato@labfree.com.br     ·     labfree.com.br', 400, 18,
+     (207, 227, 255)),
+    ('texto_teclas', 'Setas: escolher   ·   Enter: iniciar   ·   E: editar   ·   C: linha de comando', 400, 15,
+     (111, 140, 186)),
+]
+
 
 def chrome(html, largura, altura, saida):
     with tempfile.TemporaryDirectory(prefix='grub-tema-') as perfil:
@@ -79,6 +92,54 @@ def degrade(nome, raio, cores, altura):
         img.crop(box).save(TEMA / f'{nome}_{p}.png')
 
 
+def texto_png(nome, texto, peso, tamanho, cor):
+    """Texto suavizado em PNG transparente, com a altura da linha da fonte (sobe e desce iguais em todos)."""
+    from PIL import ImageFont
+    f = ImageFont.truetype(str(FONTE / f'jost-{peso}.ttf'), tamanho * AA)
+    sobe, desce = f.getmetrics()
+    img = Image.new('RGBA', (round(f.getlength(texto)) + 2 * AA, sobe + desce), cor + (0,))
+    ImageDraw.Draw(img).text((AA, 0), texto, font=f, fill=cor + (255,))
+    img = img.resize((max(1, img.width // AA), max(1, img.height // AA)), Image.LANCZOS)
+    img.save(TEMA / f'{nome}.png')
+    return img.size
+
+
+def selo(nome, texto, ttf, tamanho, altura):
+    """Faixa em destaque do rodapé: pílula em degradê azul, alfinete de localização e o texto em branco, tudo numa
+    imagem só (suavizada). Devolve a largura."""
+    from PIL import ImageFont
+    margem = 64
+    fonte_ = ImageFont.truetype(str(ttf), tamanho * AA)
+    larg = round(fonte_.getlength(texto) / AA) + 2 * margem
+    img = Image.new('RGBA', (larg * AA, altura * AA))
+    px = img.load()
+    cores = [(12, 168, 232), (26, 115, 232), (13, 71, 161)]
+    for x in range(larg * AA):
+        t = x / (larg * AA - 1)
+        a, b, u = (cores[0], cores[1], t / .5) if t < .5 else (cores[1], cores[2], (t - .5) / .5)
+        c = tuple(round(a[i] + (b[i] - a[i]) * u) for i in range(3)) + (255,)
+        for y in range(altura * AA):
+            px[x, y] = c
+    masc = Image.new('L', img.size, 0)
+    ImageDraw.Draw(masc).rounded_rectangle((0, 0, img.width - 1, img.height - 1), altura * AA // 2, fill=255)
+    img.putalpha(masc)
+    d = ImageDraw.Draw(img)
+    # borda clara de 1 px
+    d.rounded_rectangle((0, 0, img.width - 1, img.height - 1), altura * AA // 2, outline=(140, 200, 255, 150), width=AA)
+    # ícone de localização (alfinete) branco
+    cx, cy, r = 30 * AA, altura * AA // 2 - 3 * AA, 7 * AA
+    d.polygon([(cx - r * .82, cy + r * .55), (cx + r * .82, cy + r * .55), (cx, cy + r * 2.0)], fill=(255, 255, 255, 255))
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 255, 255, 255))
+    d.ellipse((cx - r * .42, cy - r * .42, cx + r * .42, cy + r * .42), fill=cores[0] + (255,))
+    # texto centralizado na pílula, com uma leve sombra para destacar do degradê
+    sobe, desce = fonte_.getmetrics()
+    x, y = (img.width - fonte_.getlength(texto)) / 2, (img.height - sobe - desce) / 2 + AA
+    d.text((x, y + AA), texto, font=fonte_, fill=(6, 40, 100, 110))
+    d.text((x, y), texto, font=fonte_, fill=(255, 255, 255, 255))
+    img.resize((larg, altura), Image.LANCZOS).save(TEMA / f'{nome}.png')
+    return larg
+
+
 def fonte(ttf, tamanho, saida, nome):
     # as Jost estáticas dizem "Regular" em todos os pesos: o nome dado separa (vira "<nome> Regular <tamanho>")
     subprocess.run(['grub-mkfont', '-n', nome, '-s', str(tamanho), '-o', str(TEMA / saida), str(ttf)], check=True)
@@ -127,12 +188,16 @@ def main():
     caixa('rolagem', 3, (255, 255, 255, 18), tam=10)
     caixa('rolagem_pegador', 3, (157, 194, 247, 160), tam=10)
 
+    larg = selo('selo', SELO, FONTE / 'jost-600.ttf', 20, 40)
+    print(f'selo.png: {larg}x40 (theme.txt: left = 50%-{larg // 2}, width = {larg})')
+    for nome, texto, peso, tam, cor in TEXTOS:
+        w, h = texto_png(nome, texto, peso, tam, cor)
+        print(f'{nome}.png: {w}x{h} (theme.txt: left = 50%-{w // 2}, width = {w}, height = {h})')
+
+    # fontes do GRUB: só o que muda a cada máquina (itens do menu, contador) e a tela de editar
     nomes = [fonte(FONTE / 'jost-400.ttf', 22, 'jost-400-22.pf2', 'Jost'),
              fonte(FONTE / 'jost-500.ttf', 22, 'jost-500-22.pf2', 'Jost Medium'),
-             fonte(FONTE / 'jost-600.ttf', 32, 'jost-600-32.pf2', 'Jost SemiBold'),
-             fonte(FONTE / 'jost-400.ttf', 18, 'jost-400-18.pf2', 'Jost'),
              fonte(FONTE / 'jost-400.ttf', 16, 'jost-400-16.pf2', 'Jost'),
-             fonte(FONTE / 'jost-500.ttf', 16, 'jost-500-16.pf2', 'Jost Medium'),
              fonte('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', 18, 'terminal-18.pf2', 'DejaVu Sans Mono')]
     print('fontes:', ', '.join(nomes))
     total = sum(f.stat().st_size for f in TEMA.rglob('*') if f.is_file())

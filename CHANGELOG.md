@@ -1,5 +1,15 @@
 # Histórico de versões — GRUB LabFree
 
+## [2.0.1] - 2026-10-28
+
+- Selo em destaque no rodapé: "Infraestrutura de TI para empresas da Grande BH" (pílula em degradê azul com
+  alfinete de localização), acima do contato.
+- Textos fixos da tela (marca, slogan, selo, contato, teclas) agora são imagens suavizadas: o GRUB só desenha
+  fonte de 1 bit, e as letras saíam serrilhadas. Os itens do menu e o contador continuam em fonte do GRUB.
+- Layout refeito para caber tudo em 1280x720 com o selo (menu com itens de 38 px; as 7 opções continuam visíveis).
+
+Testado na VM UEFI em 1920x1080 e 1280x720.
+
 ## [2.0.0] - 2026-10-28
 
 Diagnóstico e reparo automático com SystemRescue e Windows PE. Detalhes em `docs/REPARO.md`.

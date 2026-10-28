@@ -1,8 +1,12 @@
 # GRUB LabFree — tema do menu de boot (GRUB 2.06+).
-# Tudo é posicionado a partir do centro da tela (50%±N), então o conjunto fica centralizado e inteiro de
-# 1280x720 a 1920x1080 e além; o fundo é cortado nas bordas em telas de outra proporção.
+# Tudo é posicionado a partir do centro da tela (50%±N) ou do pé dela (100%-N), então o conjunto fica centralizado
+# e inteiro de 1280x720 a 1920x1080 e além; o fundo é cortado nas bordas em telas de outra proporção.
 # Imagens e fontes: gerar-tema.py. Instalar/desfazer: sudo ./instalar.sh (veja LEIAME.md).
-# Os textos (propaganda e contato) podem ser trocados aqui; as letras disponíveis são as do português.
+#
+# Os textos fixos (marca, slogan, selo, contato, teclas) são IMAGENS suavizadas: o GRUB só desenha fonte de 1 bit,
+# que deixa a letra serrilhada. Para trocar um texto: edite TEXTOS/SELO no gerar-tema.py, rode o script e copie
+# aqui a largura e o "left" que ele imprime. Os itens do menu e o contador usam fonte do GRUB (mudam a cada máquina).
+# Ordem: o GRUB pinta por cima o que vem ANTES neste arquivo.
 
 title-text: ""
 desktop-image: "fundo.png"
@@ -20,44 +24,41 @@ terminal-width: "88%"
 terminal-height: "80%"
 terminal-border: "0"
 
+# Em 1280x720 (centro = 360): logo 29-114, marca 122-145, slogan 148-194, menu 202-554, contador até ~610,
+# selo 620-660, contato 664-690, teclas 694-716.
+
 + image {
     left = 50%-60
-    top = 50%-321
+    top = 50%-331
     width = 120
     height = 85
     file = "logo.png"
 }
 
 # slogan (linha pequena + frase em destaque); o menu explica o resto
-+ label {
-    left = 0
-    top = 50%-228
-    width = 100%
-    height = 22
-    align = "center"
-    text = "SUPORTE E PROJETOS DE TI"
-    font = "Jost Medium Regular 16"
-    color = "#8fb8ff"
++ image {
+    left = 50%-103
+    top = 50%-238
+    width = 206
+    height = 23
+    file = "texto_marca.png"
 }
 
-+ label {
-    left = 0
-    top = 50%-200
-    width = 100%
-    height = 44
-    align = "center"
-    text = "Rede que aguenta a sua operação, e gente que atende."
-    font = "Jost SemiBold Regular 32"
-    color = "#ffffff"
++ image {
+    left = 50%-402
+    top = 50%-212
+    width = 804
+    height = 46
+    file = "texto_slogan.png"
 }
 
-# altura do menu = 2 x 16 (borda do cartão) + 7 itens x (44 + 4): menos que isso, o último item fica escondido.
-# A coluna toda (logo até o contador) vai de 50%-321 a 50%+270: cabe inteira em 1280x720 acima do rodapé.
+# altura do menu: o GRUB desconta ~70 px (bordas do cartão e do item escolhido + 2 x item_padding) e divide por
+# item_height + item_spacing. 352 = 70 + 7 x (38 + 2) + folga: cabem 7 itens; com menos, o último some na rolagem.
 + boot_menu {
     left = 50%-340
-    top = 50%-142
+    top = 50%-158
     width = 680
-    height = 368
+    height = 352
     menu_pixmap_style = "menu_*.png"
     item_pixmap_style = "item_*.png"
     selected_item_pixmap_style = "escolhido_*.png"
@@ -65,7 +66,7 @@ terminal-border: "0"
     selected_item_font = "Jost Medium Regular 22"
     item_color = "#cfe3ff"
     selected_item_color = "#ffffff"
-    item_height = 40
+    item_height = 38
     item_padding = 10
     item_spacing = 2
     icon_width = 32
@@ -81,9 +82,9 @@ terminal-border: "0"
 + progress_bar {
     id = "__timeout__"
     left = 50%-340
-    top = 50%+236
+    top = 50%+202
     width = 680
-    height = 34
+    height = 30
     show_text = true
     font = "Jost Regular 16"
     text_color = "#ffffff"
@@ -92,25 +93,28 @@ terminal-border: "0"
     highlight_style = "barra_cheia_*.png"
 }
 
-+ label {
-    left = 0
-    top = 100%-84
-    width = 100%
-    height = 24
-    align = "center"
-    text = "Setas: escolher   ·   Enter: iniciar   ·   E: editar   ·   C: linha de comando"
-    font = "Jost Regular 16"
-    color = "#6f8cba"
+# selo em destaque (pílula azul, alfinete e texto numa imagem só)
++ image {
+    left = 50%-288
+    top = 100%-100
+    width = 577
+    height = 40
+    file = "selo.png"
 }
 
 # contato
-+ label {
-    left = 0
-    top = 100%-46
-    width = 100%
-    height = 28
-    align = "center"
-    text = "WhatsApp (31) 9 7526-0001     ·     contato@labfree.com.br     ·     labfree.com.br"
-    font = "Jost Regular 18"
-    color = "#cfe3ff"
++ image {
+    left = 50%-316
+    top = 100%-56
+    width = 632
+    height = 26
+    file = "texto_contato.png"
+}
+
++ image {
+    left = 50%-229
+    top = 100%-26
+    width = 459
+    height = 22
+    file = "texto_teclas.png"
 }

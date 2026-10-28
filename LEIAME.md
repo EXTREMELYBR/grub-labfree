@@ -98,9 +98,12 @@ mexida (tem os registros dos reparos). `sudo grub-labfree estado` mostra o que e
 
 ## Trocar textos e cores
 
-Os textos (slogan, contato) ficam em `tema/theme.txt`. As imagens e as fontes são geradas por `gerar-tema.py` a
-partir de `fonte/` (precisa do `google-chrome`, do `python3-pil` e do `grub-mkfont`). Depois de mudar, rode o
-instalador de novo.
+Os textos fixos da tela (marca, slogan, selo "Infraestrutura de TI para empresas da Grande BH", contato e teclas)
+são **imagens suavizadas**: o GRUB só desenha fonte de 1 bit, que deixa a letra serrilhada. Para trocar um deles,
+edite `TEXTOS`/`SELO` no começo do `gerar-tema.py` e rode o script (precisa do `google-chrome`, do `python3-pil` e
+do `grub-mkfont`). Ele imprime a largura de cada imagem; copie a largura e o `left` para o `tema/theme.txt` e rode o
+instalador de novo. Os itens do menu e o contador continuam em fonte do GRUB (mudam a cada máquina) e por isso
+continuam um pouco serrilhados.
 
 ## Créditos
 

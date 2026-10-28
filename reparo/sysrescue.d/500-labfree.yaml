@@ -1,0 +1,16 @@
+---
+# GRUB LabFree — configuração do SystemRescue na partição de recuperação (lida depois do 100-defaults.yaml).
+# O auto-repair.sh só age quando o boot veio do menu do GRUB LabFree (parâmetro labfree.modo na linha do kernel);
+# no SystemRescue comum (opção "SystemRescue (terminal)") ele sai sem fazer nada.
+global:
+    setkmap: "br-abnt2"
+
+autorun:
+    ar_nowait: true
+    ar_ignorefail: true
+    exec:
+        500-labfree:
+            path: "/bin/bash"
+            parameters:
+                - "/run/archiso/bootmnt/labfree/linux/auto-repair.sh"
+            wait: "never"

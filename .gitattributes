@@ -1,0 +1,2 @@
+# os scripts do Windows PE precisam de CRLF
+*.cmd -text

@@ -9,7 +9,12 @@
 #    sudo grub-labfree conferir           religa o menu se uma atualização do sistema o desfez (o apt já roda sozinho)
 #    sudo grub-labfree nome-uefi          troca o nome "ubuntu" da BIOS (roda sozinho a cada boot: serve para clones)
 #    sudo grub-labfree desfazer           volta tudo como estava
-#  O menu ganha "Reparar o disco (Windows e Linux)": liga o Linux sem tela gráfica, corrige o disco do Linux (fsck),
+#    sudo grub-labfree reparo-preparar --sysrescue ISO [--winpe PASTA]
+#                                         prepara a partição de recuperação (rótulo LABFREE-REP, FAT32, criada antes)
+#                                         com o SystemRescue, o Windows PE e os scripts do reparo automático
+#    sudo grub-labfree reparo-atualizar   atualiza só os scripts do reparo na partição (o reparo.conf é mantido)
+#  O menu ganha "Diagnóstico e reparo automático" quando a partição de recuperação existe (veja docs/REPARO.md).
+#  Sem ela, fica "Reparar o disco (Windows e Linux)": liga o Linux sem tela gráfica, corrige o disco do Linux (fsck),
 #  corrige as partições do Windows (ntfsfix: o Windows roda o chkdsk ao ligar), confere a partição EFI e a saúde do
 #  disco, mostra o resultado e reinicia (no Windows, se ele precisar terminar a conferência).
 #
@@ -18,6 +23,9 @@
 #    --tempo N                segundos do contador (padrão: 20)
 #    --nome-uefi "NOME"       nome no menu de boot da BIOS no lugar de "Ubuntu" (padrão: LabFree)
 #    --sem-nome-uefi          não mexe no nome da BIOS
+#    --sysrescue ISO          (reparo-preparar) ISO do SystemRescue; confere o .sha256 ao lado, se houver
+#    --winpe PASTA            (reparo-preparar) pasta "media" do Windows PE gerada pelo montar-winpe.cmd
+#    --conf-nova              (reparo-preparar/atualizar) troca o reparo.conf da partição pelo do pacote
 #
 #  Funciona em Ubuntu, Linux Mint e Debian (e derivados) com GRUB 2.06 ou mais novo, com UEFI ou BIOS antiga.
 #  Antes de mudar qualquer coisa guarda uma cópia em /var/backups/grub-labfree/.
@@ -35,6 +43,12 @@ REPARO_SERVICO=/etc/systemd/system/grub-labfree-reparo.service
 REPARO_ALVO=/etc/systemd/system/grub-labfree-reparo.target
 BACKUPS=/var/backups/grub-labfree
 DESLIGADOS=(/etc/grub.d/10_linux /etc/grub.d/30_uefi-firmware)
+# reparo automático (partição de recuperação)
+REP_CONF=/etc/grub-labfree-reparo.conf
+COMPARTILHADO=/usr/local/share/grub-labfree
+ROTULO_REP=LABFREE-REP
+REP_MIN_MB=2800
+ISO=""; WINPE_DIR=""; CONF_NOVA=0
 
 erro() { echo "ERRO: $*" >&2; exit 1; }
 info() { echo "== $*"; }
@@ -277,8 +291,8 @@ desfazer() {
     info "Voltando o menu de boot original"
     local f
     for f in "${DESLIGADOS[@]}"; do [ -f "$f" ] && chmod +x "$f"; done
-    rm -f "$SCRIPT_GRUB" "$CFG_GRUB" "$GANCHO_APT" "$REPARO_SERVICO" "$REPARO_ALVO"
-    rm -rf "$TEMA_DESTINO"
+    rm -f "$SCRIPT_GRUB" "$CFG_GRUB" "$GANCHO_APT" "$REPARO_SERVICO" "$REPARO_ALVO" "$REP_CONF"
+    rm -rf "$TEMA_DESTINO" "$COMPARTILHADO"
     if [ -f "$SERVICO" ]; then
         systemctl disable grub-labfree-uefi.service >/dev/null 2>&1 || true
         rm -f "$SERVICO"; systemctl daemon-reload || true
@@ -291,6 +305,7 @@ desfazer() {
     fi
     rm -f "$CONF" "$COMANDO"
     echo "Pronto: menu de boot original de volta."
+    echo "A partição de recuperação ($ROTULO_REP), se houver, não foi mexida: ela tem os registros dos reparos."
 }
 
 estado() {
@@ -299,6 +314,9 @@ estado() {
     grep -E "^\s*(menuentry|submenu) " /boot/grub/grub.cfg 2>/dev/null | grep -v "^\s\s*menuentry '.*kernel" | sed "s/^\s*//; s/ --class.*//; s/^menuentry /  /; s/^submenu /  /"
     if [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null; then
         local pasta; pasta=$(pasta_efi) && entradas_sistema "$pasta" | awk -F'|' '{print "  na BIOS: Boot" $1 " \"" $2 "\""}'
+    fi
+    if [ -r "$REP_CONF" ]; then
+        echo "  partição de recuperação: $(sed -n 's/^REP_DEV=//p' "$REP_CONF") (SystemRescue $(sed -n 's/^SYSRESCUE=//p' "$REP_CONF"), Windows PE: $(sed -n 's/^WINPE=//p' "$REP_CONF"))"
     fi
 }
 
@@ -340,6 +358,11 @@ CFG
     desligar_originais || true
     salvar_conf
     install -m 755 "$origem/instalar.sh" "$COMANDO"
+    # scripts do reparo automático: ficam no sistema para o "grub-labfree reparo-preparar/atualizar"
+    if [ -d "$origem/reparo" ]; then
+        rm -rf "$COMPARTILHADO/reparo"; mkdir -p "$COMPARTILHADO"
+        cp -r "$origem/reparo" "$COMPARTILHADO/reparo"; cp "$origem/VERSION" "$COMPARTILHADO/reparo/VERSION"
+    fi
     command -v systemctl >/dev/null && instalar_reparo
     command -v ntfsfix >/dev/null || echo "  aviso: sem o ntfsfix (pacote ntfs-3g) o reparo não corrige as partições do Windows"
     cat > "$GANCHO_APT" <<'APT'
@@ -363,6 +386,11 @@ UNIT
         systemctl daemon-reload && systemctl enable grub-labfree-uefi.service >/dev/null 2>&1 || true
     fi
 
+    if [ -r "$REP_CONF" ]; then
+        info "Partição de recuperação"
+        ( reparo_atualizar ) || echo "  não consegui atualizar os scripts na partição de recuperação (o menu funciona do mesmo jeito)"
+    fi
+
     info "Gerando o menu (update-grub)"
     if ! refazer_menu; then
         echo "update-grub falhou: voltando como estava." >&2
@@ -381,16 +409,154 @@ UNIT
     echo "Pronto. Reinicie para ver o menu novo. Para voltar como era: sudo grub-labfree desfazer"
 }
 
+# --------------------------------------------------------------------------- partição de recuperação
+# A partição é criada antes, à mão, na máquina modelo (veja docs/REPARO.md): FAT32, rótulo LABFREE-REP, 3 GB ou
+# mais. Este script nunca cria, apaga nem formata partição: só copia arquivos para ela.
+achar_rep() {
+    local lista n
+    lista=$(blkid -o device -t LABEL="$ROTULO_REP" 2>/dev/null || true)
+    n=$(printf '%s\n' "$lista" | grep -c . || true)
+    [ "$n" != 0 ] || erro "não achei a partição de recuperação (rótulo $ROTULO_REP). Crie-a antes: veja docs/REPARO.md"
+    [ "$n" = 1 ] || erro "há $n partições com o rótulo $ROTULO_REP ($(echo $lista)): deixe só uma"
+    REP_DEV=$lista
+    [ "$(blkid -s TYPE -o value "$REP_DEV")" = vfat ] || erro "$REP_DEV precisa ser FAT32 (o GRUB e o Windows PE só ligam de FAT)"
+    REP_UUID_NOVO=$(blkid -s UUID -o value "$REP_DEV")
+    [ "$(( $(lsblk -bdno SIZE "$REP_DEV") / 1048576 ))" -ge $REP_MIN_MB ] || erro "$REP_DEV tem menos de $REP_MIN_MB MB"
+}
+
+montar_rep() {
+    REP_MP=$(findmnt -rn -S "$REP_DEV" -o TARGET | head -1 || true)
+    REP_MONTEI=0
+    if [ -z "$REP_MP" ]; then
+        REP_MP=/run/grub-labfree/rep; mkdir -p "$REP_MP"
+        mount -t vfat -o rw,utf8 "$REP_DEV" "$REP_MP"; REP_MONTEI=1
+    fi
+}
+desmontar_rep() { sync; [ "${REP_MONTEI:-0}" = 1 ] && umount "$REP_MP" || true; }
+
+# Copia os scripts do reparo para labfree/ da partição. O reparo.conf da partição é mantido (pode ter ajustes do
+# cliente), a não ser com --conf-nova. O grubenv é o arquivo de 1 KB que o GRUB lê e apaga a cada boot.
+atualizar_labfree() {
+    local origem=$1 l="$REP_MP/labfree"
+    mkdir -p "$l/linux" "$l/windows" "$l/sessoes"
+    cp "$origem"/linux/*.sh "$l/linux/"
+    cp "$origem"/windows/*.cmd "$l/windows/"
+    if [ ! -f "$l/reparo.conf" ] || [ "$CONF_NOVA" = 1 ]; then
+        [ -f "$l/reparo.conf" ] && cp "$l/reparo.conf" "$l/reparo.conf.anterior"
+        cp "$origem/reparo.conf" "$l/reparo.conf"
+    else
+        # chaves novas desta versão entram no fim, com o valor padrão; as que já existem não mudam
+        local chave linha
+        while IFS= read -r linha; do
+            chave=${linha%%=*}
+            [[ "$linha" =~ ^[A-Z][A-Z0-9_]*= ]] || continue
+            grep -q "^$chave=" "$l/reparo.conf" && continue
+            printf '\r\n# acrescentada na versão %s (veja o reparo.conf do pacote)\r\n%s\r\n' "$(cat "$origem/VERSION" 2>/dev/null || cat "$origem/../VERSION")" "$linha" >> "$l/reparo.conf"
+            echo "  reparo.conf: acrescentada $chave"
+        done < "$origem/reparo.conf"
+    fi
+    cp "$origem/VERSION" "$l/VERSION" 2>/dev/null || cp "$origem/../VERSION" "$l/VERSION" 2>/dev/null || true
+    mkdir -p "$REP_MP/sysrescue.d"
+    cp "$origem/sysrescue.d/500-labfree.yaml" "$REP_MP/sysrescue.d/"
+    printf 'Partição de recuperação do GRUB LabFree. Não apague: tem o SystemRescue, o Windows PE e os registros do reparo.\r\n' > "$l/LEIA-ME.txt"
+    [ -f "$l/grubenv" ] || grub-editenv "$l/grubenv" create
+    # modelos que o Windows PE copia por cima do grubenv (ele não tem o grub-editenv)
+    rm -f "$l/grubenv-validar" "$l/grubenv-vazio"
+    grub-editenv "$l/grubenv-validar" create; grub-editenv "$l/grubenv-validar" set labfree_proxima=validar
+    grub-editenv "$l/grubenv-vazio" create
+}
+
+salvar_rep_conf() {
+    local sr winpe=nao
+    sr=$(cat "$REP_MP/sysresccd/VERSION" 2>/dev/null || echo "?")
+    [ -f "$REP_MP/sources/boot.wim" ] && winpe=sim
+    printf 'REP_UUID=%s\nREP_DEV=%s\nSYSRESCUE=%s\nWINPE=%s\n' "$REP_UUID_NOVO" "$REP_DEV" "$sr" "$winpe" > "$REP_CONF"
+}
+
+reparo_preparar() {
+    local origem iso_mp=/run/grub-labfree/iso livre precisa f
+    origem="$COMPARTILHADO/reparo"
+    [ -d "$(dirname "$(readlink -f "$0")")/reparo" ] && origem="$(dirname "$(readlink -f "$0")")/reparo"
+    [ -d "$origem/linux" ] || erro "faltam os scripts do reparo ($origem). Rode antes: sudo ./instalar.sh"
+    command -v grub-editenv >/dev/null || erro "falta o grub-editenv (pacote grub-common)"
+    achar_rep
+    info "Partição de recuperação: $REP_DEV (UUID $REP_UUID_NOVO)"
+    montar_rep
+    trap 'umount "$iso_mp" 2>/dev/null; desmontar_rep' EXIT
+
+    if [ -n "$ISO" ]; then
+        [ -f "$ISO" ] || erro "ISO não encontrada: $ISO"
+        if [ -f "$ISO.sha256" ]; then
+            info "Conferindo a ISO ($ISO.sha256)"
+            (cd "$(dirname "$ISO")" && sha256sum -c "$(basename "$ISO").sha256") || erro "a ISO não confere com o .sha256: baixe de novo"
+        else
+            echo "  aviso: sem $ISO.sha256 ao lado da ISO: integridade não conferida"
+        fi
+        mkdir -p "$iso_mp"; mount -o loop,ro "$ISO" "$iso_mp"
+        [ -f "$iso_mp/sysresccd/boot/x86_64/vmlinuz" ] || erro "a ISO não parece ser do SystemRescue"
+        precisa=$(du -sm "$iso_mp/sysresccd" | cut -f1)
+        livre=$(( $(df -Pm "$REP_MP" | awk 'NR == 2 {print $4}') + $(du -sm "$REP_MP/sysresccd" 2>/dev/null | cut -f1 || echo 0) ))
+        [ "$livre" -gt $((precisa + 50)) ] || erro "falta espaço na partição: precisa de ${precisa} MB, tem ${livre} MB"
+        info "Copiando o SystemRescue $(cat "$iso_mp/sysresccd/VERSION") (${precisa} MB)"
+        rm -rf "$REP_MP/sysresccd.novo"
+        cp -r --no-preserve=mode,ownership "$iso_mp/sysresccd" "$REP_MP/sysresccd.novo"
+        rm -rf "$REP_MP/sysresccd"; mv "$REP_MP/sysresccd.novo" "$REP_MP/sysresccd"
+        mkdir -p "$REP_MP/sysrescue.d"; cp "$iso_mp"/sysrescue.d/*.yaml "$REP_MP/sysrescue.d/"
+        umount "$iso_mp"
+    fi
+    [ -f "$REP_MP/sysresccd/boot/x86_64/vmlinuz" ] || erro "a partição ainda não tem o SystemRescue: use --sysrescue ISO"
+
+    if [ -n "$WINPE_DIR" ]; then
+        [ -f "$WINPE_DIR/sources/boot.wim" ] || erro "$WINPE_DIR não tem sources/boot.wim (use a pasta 'media' do montar-winpe.cmd)"
+        for f in EFI/Boot/bootx64.efi EFI/Microsoft/Boot/BCD Boot/BCD Boot/boot.sdi bootmgr; do
+            [ -n "$(find "$WINPE_DIR" -ipath "$WINPE_DIR/$f" 2>/dev/null | head -1)" ] || erro "$WINPE_DIR: falta $f"
+        done
+        for f in labfree sysresccd sysrescue.d; do
+            [ ! -e "$WINPE_DIR/$f" ] || erro "$WINPE_DIR não pode ter a pasta $f"
+        done
+        precisa=$(du -sm "$WINPE_DIR" | cut -f1)
+        info "Copiando o Windows PE (${precisa} MB)"
+        for f in "$WINPE_DIR"/*; do
+            rm -rf "$REP_MP/$(basename "$f")"
+            cp -r --no-preserve=mode,ownership "$f" "$REP_MP/"
+        done
+    fi
+
+    info "Scripts do reparo"
+    atualizar_labfree "$origem"
+    salvar_rep_conf
+    desmontar_rep; trap - EXIT
+    info "Refazendo o menu"
+    refazer_menu || erro "update-grub falhou"
+    grep -q "labfree-reparo'" /boot/grub/grub.cfg || erro "o menu não ganhou a opção de reparo (veja $REP_CONF)"
+    echo "Pronto: o menu tem \"Diagnóstico e reparo automático\" (SystemRescue $(sed -n 's/^SYSRESCUE=//p' "$REP_CONF"), Windows PE: $(sed -n 's/^WINPE=//p' "$REP_CONF"))."
+}
+
+reparo_atualizar() {
+    [ -r "$REP_CONF" ] || return 0
+    local origem="$COMPARTILHADO/reparo"
+    [ -d "$origem/linux" ] || return 0
+    achar_rep
+    montar_rep
+    atualizar_labfree "$origem"
+    salvar_rep_conf
+    desmontar_rep
+    echo "  scripts do reparo atualizados em $REP_DEV"
+}
+
 # --------------------------------------------------------------------------- opções
 ACAO=aplicar
 while [ $# -gt 0 ]; do
     case "$1" in
-        aplicar|desfazer|conferir|estado|nome-uefi|reparo) ACAO=$1 ;;
+        aplicar|desfazer|conferir|estado|nome-uefi|reparo|reparo-preparar|reparo-atualizar) ACAO=$1 ;;
+        --sysrescue) ISO=$(readlink -f "${2:-}"); shift ;;
+        --winpe) WINPE_DIR=$(readlink -f "${2:-}"); shift ;;
+        --conf-nova) CONF_NOVA=1 ;;
         --padrao) PADRAO=${2:-}; shift ;;
         --tempo) TEMPO=${2:-}; shift ;;
         --nome-uefi) NOME_UEFI=${2:-}; shift; [ -n "$NOME_UEFI" ] && [ "${#NOME_UEFI}" -le 40 ] || erro "--nome-uefi: de 1 a 40 letras" ;;
         --sem-nome-uefi) NOME_UEFI=- ;;
-        -h|--ajuda|--help) sed -n '3,23p' "$0" | sed 's/^#  \{0,1\}//'; exit 0 ;;
+        -h|--ajuda|--help) sed -n '3,/^# =====/p' "$0" | sed '$d; s/^#  \{0,1\}//'; exit 0 ;;
         *) erro "opção desconhecida: $1 (veja --ajuda)" ;;
     esac
     shift
@@ -403,4 +569,6 @@ case "$ACAO" in
     estado) estado ;;
     nome-uefi) [ "$NOME_UEFI" = "-" ] || renomear_uefi "$NOME_UEFI" ;;
     reparo) reparo ;;
+    reparo-preparar) reparo_preparar ;;
+    reparo-atualizar) reparo_atualizar ;;
 esac

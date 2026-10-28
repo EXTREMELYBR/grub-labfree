@@ -47,11 +47,93 @@ for esp in /boot/efi /efi; do
     fi
 done
 
-# 3) reparo do disco: liga este Linux sem tela gráfica, com a correção do disco forçada (fsck), e o
-#    grub-labfree-reparo.target confere as partições do Windows e da EFI, mostra o resultado e reinicia
-if [ -n "$principal" ] && [ -f /etc/systemd/system/grub-labfree-reparo.target ]; then
+# 3) reparo do disco
+#  a) com a partição de recuperação (rótulo LABFREE-REP, preparada por "grub-labfree reparo-preparar"):
+#     "Diagnóstico e reparo automático" liga o SystemRescue da partição, que diagnostica, corrige o que for seguro
+#     e, se o Windows precisar, reinicia no Windows PE da mesma partição. A ida e a volta entre os dois usam o
+#     arquivo labfree/grubenv da partição: quem quer mudar o próximo boot grava labfree_proxima=winpe|validar e o
+#     GRUB lê, apaga e escolhe a opção (só uma vez). O SystemRescue não é assinado para o Secure Boot: com ele
+#     ligado ($lockdown = y), fica a opção antiga abaixo.
+#  b) sem a partição (ou com Secure Boot): "Reparar o disco (Windows e Linux)" liga este Linux sem tela gráfica,
+#     com a correção do disco forçada (fsck), e o grub-labfree-reparo.target confere as partições do Windows e da
+#     EFI, mostra o resultado e reinicia
+REP_UUID=""; REP_WINPE=nao
+if [ -r /etc/grub-labfree-reparo.conf ]; then
+    REP_UUID=$(sed -n 's/^REP_UUID=//p' /etc/grub-labfree-reparo.conf)
+    REP_WINPE=$(sed -n 's/^WINPE=//p' /etc/grub-labfree-reparo.conf)
+    [ -n "$REP_UUID" ] && [ -n "$(blkid -t UUID="$REP_UUID" -o device 2>/dev/null)" ] || REP_UUID=""
+fi
+antigo() {
+    [ -n "$principal" ] && [ -f /etc/systemd/system/grub-labfree-reparo.target ] || return 0
     entrada "Reparar o disco (Windows e Linux)" reparar labfree-reparar \
         "fsck.mode=force fsck.repair=yes systemd.unit=grub-labfree-reparo.target labfree.reparo=1"
+}
+# sysrescue TÍTULO CLASSE ID PARÂMETROS → entrada que liga o SystemRescue da partição de recuperação
+sysrescue() {
+    printf "menuentry '%s' --class %s \$menuentry_id_option '%s' {\n" "$1" "$2" "$3"
+    printf '\tset gfxpayload=keep\n'
+    printf '\tif search --no-floppy --fs-uuid --set=root %s; then\n' "$REP_UUID"
+    printf "\t\techo 'Carregando o SystemRescue...'\n"
+    printf '\t\tlinux /sysresccd/boot/x86_64/vmlinuz archisobasedir=sysresccd archisodevice=/dev/disk/by-uuid/%s iomem=relaxed %s\n' "$REP_UUID" "$4"
+    printf '\t\tinitrd /sysresccd/boot/intel_ucode.img /sysresccd/boot/amd_ucode.img /sysresccd/boot/x86_64/sysresccd.img\n'
+    printf '\telse\n'
+    nao_achou
+    printf '\tfi\n}\n'
+}
+# Mensagem quando o GRUB não acha a partição de recuperação (apagada, ou em outro disco que a placa-mãe não
+# apresentou ao GRUB: com "Fast Boot" ligado, algumas só apresentam o disco de boot).
+nao_achou() {
+    printf "\t\techo 'A partição de recuperação LABFREE-REP não foi encontrada.'\n"
+    printf "\t\techo 'Se ela fica em outro disco, desligue o Fast Boot na configuração da placa-mãe.'\n"
+    printf '\t\tsleep 20\n'
+}
+# Opções para o técnico (vão para dentro de "Opções avançadas (para técnicos)", no item 5): os outros modos, a volta
+# depois do Windows PE, o SystemRescue sem automação e o Windows PE. Ficam num arquivo temporário até o item 5.
+TEC=$(mktemp); trap 'rm -f "$TEC"' EXIT
+if [ -n "$REP_UUID" ]; then
+    echo "Adding LabFree recovery partition entries ($REP_UUID) ..." >&2
+    cat << EOF
+if search --no-floppy --fs-uuid --set=labfree_rep $REP_UUID; then
+	if load_env --file (\$labfree_rep)/labfree/grubenv labfree_proxima; then
+		if [ "\$labfree_proxima" = "winpe" ]; then set default="labfree-avancado>labfree-rep-winpe"; set timeout=3; fi
+		if [ "\$labfree_proxima" = "validar" ]; then set default="labfree-avancado>labfree-rep-validar"; set timeout=3; fi
+		if [ -n "\$labfree_proxima" ]; then
+			set labfree_proxima=
+			save_env --file (\$labfree_rep)/labfree/grubenv labfree_proxima
+		fi
+	fi
+fi
+if [ "\$lockdown" != "y" ]; then
+EOF
+    sysrescue "Diagnóstico e reparo automático" reparar labfree-reparo "labfree.modo=padrao labfree.rep=$REP_UUID" | sed 's/^/\t/'
+    echo "else"
+    antigo | sed 's/^/\t/'
+    echo "fi"
+    {
+        echo 'if [ "$lockdown" != "y" ]; then'
+        {
+            sysrescue "Só diagnóstico (não muda nada nos discos)" reparar labfree-rep-modo1 "labfree.modo=1 labfree.rep=$REP_UUID"
+            sysrescue "Reparo seguro (modo 2)" reparar labfree-rep-modo2 "labfree.modo=2 labfree.rep=$REP_UUID"
+            sysrescue "Reparo avançado controlado (modo 3)" reparar labfree-rep-modo3 "labfree.modo=3 labfree.rep=$REP_UUID"
+            sysrescue "Continuar o reparo (depois do Windows PE)" reparar labfree-rep-validar "labfree.modo=padrao labfree.fase=validar labfree.rep=$REP_UUID"
+            sysrescue "SystemRescue (terminal, sem automação)" linux labfree-rep-terminal ""
+        } | sed 's/^/\t/'
+        echo 'else'
+        printf "\tmenuentry 'Diagnóstico automático: desligue o Secure Boot' --class reparar {\n"
+        printf "\t\techo 'O SystemRescue não liga com o Secure Boot ligado. Desligue-o na configuração da placa-mãe.'\n"
+        printf "\t\tsleep 15\n\t}\n"
+        echo 'fi'
+        if [ "$REP_WINPE" = sim ]; then
+            # o Windows PE é da Microsoft e assinado: liga com ou sem Secure Boot
+            printf "menuentry 'Windows PE (reparo do Windows)' --class windows \$menuentry_id_option 'labfree-rep-winpe' {\n"
+            printf '\tif ! search --no-floppy --fs-uuid --set=root %s; then\n' "$REP_UUID"
+            nao_achou
+            printf '\telif [ "$grub_platform" = "efi" ]; then\n\t\tinsmod chain\n\t\tchainloader /EFI/Boot/bootx64.efi\n'
+            printf '\telse\n\t\tinsmod ntldr\n\t\tntldr /bootmgr\n\tfi\n}\n'
+        fi
+    } | sed 's/^/\t/' > "$TEC"
+else
+    antigo
 fi
 
 # 4) configurações da placa-mãe (no lugar do 30_uefi-firmware), reiniciar, desligar
@@ -72,15 +154,29 @@ menuentry 'Desligar' --class desligar $menuentry_id_option 'labfree-desligar' {
 }
 EOF
 
-# 5) opções avançadas: o resto do 10_linux (o submenu dele, com todos os kernels e o modo de recuperação)
-printf '%s\n' "$linux" | awk -v sistema="$SISTEMA" '
+# 5) opções avançadas: as opções do reparo para o técnico (se houver) e o resto do 10_linux (o submenu dele, com
+#    todos os kernels e o modo de recuperação). O submenu ganha o id fixo labfree-avancado (o grubenv usa).
+printf '%s\n' "$linux" | awk -v sistema="$SISTEMA" -v tec="$TEC" '
     /^menuentry / && !passou { pulando = 1 }
     pulando { if (/^}/) { pulando = 0; passou = 1 } ; next }
     passou && /^submenu / && !renomeado { renomeado = 1
-        sub(/^submenu '\''[^'\'']*'\''/, "submenu '\''Opções avançadas (para técnicos)'\'' --class avancado") }
+        sub(/^submenu '\''[^'\'']*'\''/, "submenu '\''Opções avançadas (para técnicos)'\'' --class avancado")
+        sub(/\$menuentry_id_option '\''[^'\'']*'\''/, "$menuentry_id_option '\''labfree-avancado'\''")
+        print
+        while ((getline l < tec) > 0) print l
+        next }
     passou && /^\tmenuentry / {
         sub(/'\''[^'\'']*, with Linux /, "'\''" sistema " (kernel ")
         sub(/-generic/, "")
         if (sub(/ \(recovery mode\)'\''/, ") - recuperação'\''")) {} else sub(/'\'' --class/, ")'\'' --class")
         gsub(/ --class [^ ]+/, ""); sub(/ \$menuentry_id_option/, " --class linux $menuentry_id_option") }
-    passou { print }'
+    passou { print }
+    END {
+        # sem o submenu do 10_linux (GRUB_DISABLE_SUBMENU=y): as opções do técnico ganham um submenu próprio
+        if (!renomeado && (getline l < tec) > 0) {
+            print "submenu '\''Opções avançadas (para técnicos)'\'' --class avancado $menuentry_id_option '\''labfree-avancado'\'' {"
+            print l
+            while ((getline l < tec) > 0) print l
+            print "}"
+        }
+    }'
